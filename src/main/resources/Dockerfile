@@ -10,13 +10,13 @@ COPY . .
 RUN gradle build -x test
 
 # 🐳 Etapa 2: Imagem final com JDK 17 minimalista
-FROM eclipse-temurin:17-jdk-alpine
+FROM tomcat:10.1-jdk17-temurin
 
 # Define diretório de trabalho
 WORKDIR /app
 
 # Copia o .jar do build
-COPY --from=builder /app/build/libs/*.jar app.jar
+COPY --from=builder /app/build/libs/*.war app.war
 
 # Define variáveis de ambiente padrão (override no Docker Run ou Render)
 ENV SERVER_PORT=8081
