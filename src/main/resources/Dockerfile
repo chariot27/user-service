@@ -3,21 +3,19 @@ FROM gradle:8.5-jdk17 AS builder
 
 WORKDIR /app
 
-# Copia arquivos do projeto
+# Copia todos os arquivos do projeto
 COPY . .
 
 # Executa o build (gera o .jar)
-RUN gradle build -x test
+RUN gradle bootJar -x test
 
-# 🐳 Etapa 2: Imagem final com JDK 17 minimalista
-FROM tomcat:10.1-jdk17-temurin
+# 🐳 Etapa 2: Imagem final com JDK leve
+FROM eclipse-temurin:17-jdk-alpine
 
-# Define diretório de trabalho
 WORKDIR /app
 
-# Copia o .jar do build
-COPY --from=builder /app/build/libs/*.war app.war
-
+# Copia o JAR gerado na etapa anterior
+COPY --from=builder /app/build/libs/*.jar app.jar
 # Define variáveis de ambiente padrão (override no Docker Run ou Render)
 ENV SERVER_PORT=8081
 
