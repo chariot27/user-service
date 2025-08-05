@@ -19,7 +19,7 @@ WORKDIR /app
 COPY --from=builder /app/build/libs/*.jar app.jar
 
 # Define variáveis de ambiente padrão (override no Docker Run ou Render)
-ENV SERVER_PORT=8080
+ENV SERVER_PORT=8081
 
 # Expõe a porta configurada (Render usa isso)
 EXPOSE ${SERVER_PORT}
