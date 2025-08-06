@@ -11,5 +11,9 @@ public interface UserMapper {
 
     @Mapping(target = "id", ignore = true)
     @Mapping(target = "dataCriacao", ignore = true)
+
+    // 👇 mapeamento explícito do campo senha
+    @Mapping(target = "senha", source = "senha") 
     User toEntity(RegisterRequest dto);
 }
+
