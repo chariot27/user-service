@@ -9,7 +9,6 @@ import java.util.UUID;
 
 import br.ars.user_service.enums.UserType;
 
-
 @Entity
 @Table(name = "users")
 @NoArgsConstructor
@@ -25,7 +24,7 @@ public class User {
 
     @Column(unique = true, nullable = false, name = "Email")
     private String email;
-    
+
     @Column(unique = true, nullable = false, name = "Telefone")
     private String telefone;
 
@@ -40,7 +39,8 @@ public class User {
     private String bio;
 
     @ElementCollection
-    @Column(name = "Tags")
+    @CollectionTable(name = "user_tags", joinColumns = @JoinColumn(name = "user_id"))
+    @Column(name = "tag")
     private List<String> tags;
 
     @Column(name = "Avatar")
@@ -71,6 +71,14 @@ public class User {
 
     public void setEmail(String email) {
         this.email = email;
+    }
+
+    public String getTelefone() {
+        return telefone;
+    }
+
+    public void setTelefone(String telefone) {
+        this.telefone = telefone;
     }
 
     public String getSenha() {
@@ -120,5 +128,7 @@ public class User {
     public void setDataCriacao(LocalDateTime dataCriacao) {
         this.dataCriacao = dataCriacao;
     }
+
+    // Getters e Setters (mantidos)
     
 }
