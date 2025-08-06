@@ -3,15 +3,11 @@ package br.ars.user_service.controller;
 import java.util.Optional;
 import java.util.UUID;
 
-import org.springframework.web.bind.annotation.CrossOrigin;
-import org.springframework.web.bind.annotation.DeleteMapping;
-import org.springframework.web.bind.annotation.GetMapping;
-import org.springframework.web.bind.annotation.PathVariable;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.*;
 
+import br.ars.user_service.dto.LoginRequest;
 import br.ars.user_service.dto.RegisterRequest;
 import br.ars.user_service.models.User;
 import br.ars.user_service.service.UserService;
@@ -28,17 +24,35 @@ public class UserController {
     }
 
     @PostMapping("/register")
-    public User register(@RequestBody RegisterRequest request) {
-        return service.register(request);
+    public ResponseEntity<User> register(@RequestBody RegisterRequest request) {
+        User user = service.register(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(user);
     }
 
     @GetMapping("/{id}")
-    public Optional<User> getById(@PathVariable UUID id) {
-        return service.findById(id);
+    public ResponseEntity<User> getById(@PathVariable UUID id) {
+        return service.findById(id)
+                .map(ResponseEntity::ok)
+                .orElse(ResponseEntity.notFound().build());
     }
 
     @DeleteMapping("/{id}")
-    public void delete(@PathVariable UUID id) {
+    public ResponseEntity<String> delete(@PathVariable UUID id) {
+        if (service.findById(id).isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND)
+                    .body("Usuário não encontrado.");
+        }
         service.deleteUser(id);
+        return ResponseEntity.ok("Usuário removido com sucesso.");
     }
+
+    @PostMapping("/login")
+    public ResponseEntity<String> login(@RequestBody LoginRequest request) {
+        boolean authenticated = service.validateLogin(request.getEmail(), request.getPassword());
+        if (authenticated) {
+            return ResponseEntity.ok("Login realizado com sucesso.");
+        }
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Credenciais inválidas.");
+    }
+
 }
