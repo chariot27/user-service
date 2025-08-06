@@ -5,6 +5,7 @@ import java.util.List;
 public class RegisterRequest {
     public String nome;
     public String email;
+    public String telefone;
     public String senha;
     public String tipo; // Enum: PROFISSIONAL, CONSULTOR, EMPRESA
     public String bio;
