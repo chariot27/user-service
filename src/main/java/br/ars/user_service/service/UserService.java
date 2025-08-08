@@ -12,6 +12,8 @@ import br.ars.user_service.repository.UserRepository;
 import br.ars.user_service.mapper.UserMapper;
 import br.ars.user_service.security.JwtUtil;
 
+import jakarta.transaction.Transactional;
+
 @Service
 public class UserService {
 
@@ -27,40 +29,65 @@ public class UserService {
         this.jwtUtil = jwtUtil;
     }
 
-    // REGISTRO COM CRIPTOGRAFIA
+    /**
+     * 📥 Registro de novo usuário com validação, criptografia e mapeamento DTO.
+     */
+    @Transactional
     public User register(RegisterRequest req) {
+        // Verifica se e-mail já está em uso
         if (repo.findByEmail(req.getEmail()).isPresent()) {
-            throw new RuntimeException("Email já cadastrado.");
+            throw new IllegalArgumentException("Email já cadastrado.");
         }
 
-        User user = mapper.toEntity(req);
-        user.setSenha(user.getSenha());
-        return repo.save(user);
+        try {
+            // Mapeia o DTO para entidade
+            User user = mapper.toEntity(req);
+
+            // Criptografa a senha antes de persistir
+            user.setSenha(encoder.encode(user.getSenha()));
+
+            return repo.save(user);
+
+        } catch (Exception e) {
+            throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
+        }
     }
 
-    // AUTENTICAÇÃO + GERAÇÃO DE TOKEN
+    /**
+     * 🔐 Autentica um usuário e retorna o JWT.
+     */
     public String authenticateAndGenerateToken(String email, String rawPassword) {
-        Optional<User> userOpt = repo.findByEmail(email);
-
-        User user = userOpt.orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
+        User user = repo.findByEmail(email)
+            .orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
 
         if (!encoder.matches(rawPassword, user.getSenha())) {
             throw new RuntimeException("Senha inválida.");
         }
 
-        // Geração do token JWT com o ID e e-mail do usuário
         return jwtUtil.generateToken(user.getId(), user.getEmail());
     }
 
+    /**
+     * 🔍 Busca usuário por ID.
+     */
     public Optional<User> findById(UUID id) {
         return repo.findById(id);
     }
 
+    /**
+     * 🔍 Busca usuário por email.
+     */
     public Optional<User> findByEmail(String email) {
         return repo.findByEmail(email);
     }
 
+    /**
+     * ❌ Deleta um usuário por ID.
+     */
     public void deleteUser(UUID id) {
+        if (!repo.existsById(id)) {
+            throw new RuntimeException("Usuário não encontrado para deletar.");
+        }
         repo.deleteById(id);
     }
 }
