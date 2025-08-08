@@ -1,6 +1,5 @@
 package br.ars.user_service.controller;
 
-import java.util.Optional;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
@@ -48,11 +47,11 @@ public class UserController {
 
     @PostMapping("/login")
     public ResponseEntity<String> login(@RequestBody LoginRequest request) {
-        boolean authenticated = service.validateLogin(request.getEmail(), request.getPassword());
-        if (authenticated) {
-            return ResponseEntity.ok("Login realizado com sucesso.");
+        try {
+            String token = service.authenticateAndGenerateToken(request.getEmail(), request.getPassword());
+            return ResponseEntity.ok(token);
+        } catch (RuntimeException e) {
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(e.getMessage());
         }
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body("Credenciais inválidas.");
     }
-
 }

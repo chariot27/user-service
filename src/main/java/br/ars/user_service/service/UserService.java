@@ -7,9 +7,10 @@ import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 
 import br.ars.user_service.dto.RegisterRequest;
-import br.ars.user_service.mapper.UserMapper;
 import br.ars.user_service.models.User;
 import br.ars.user_service.repository.UserRepository;
+import br.ars.user_service.mapper.UserMapper;
+import br.ars.user_service.security.JwtUtil;
 
 @Service
 public class UserService {
@@ -17,11 +18,13 @@ public class UserService {
     private final UserRepository repo;
     private final UserMapper mapper;
     private final PasswordEncoder encoder;
+    private final JwtUtil jwtUtil;
 
-    public UserService(UserRepository repo, UserMapper mapper, PasswordEncoder encoder) {
+    public UserService(UserRepository repo, UserMapper mapper, PasswordEncoder encoder, JwtUtil jwtUtil) {
         this.repo = repo;
         this.mapper = mapper;
         this.encoder = encoder;
+        this.jwtUtil = jwtUtil;
     }
 
     // REGISTRO COM CRIPTOGRAFIA
@@ -31,20 +34,22 @@ public class UserService {
         }
 
         User user = mapper.toEntity(req);
-
-        // Criptografar a senha ANTES de salvar no banco
         user.setSenha(encoder.encode(user.getSenha()));
-
         return repo.save(user);
     }
 
-    // LOGIN (VALIDAÇÃO DE SENHA)
-    public boolean validateLogin(String email, String rawPassword) {
+    // AUTENTICAÇÃO + GERAÇÃO DE TOKEN
+    public String authenticateAndGenerateToken(String email, String rawPassword) {
         Optional<User> userOpt = repo.findByEmail(email);
 
-        return userOpt
-                .map(user -> encoder.matches(rawPassword, user.getSenha()))
-                .orElse(false);
+        User user = userOpt.orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
+
+        if (!encoder.matches(rawPassword, user.getSenha())) {
+            throw new RuntimeException("Senha inválida.");
+        }
+
+        // Geração do token JWT com o ID e e-mail do usuário
+        return jwtUtil.generateToken(user.getId(), user.getEmail());
     }
 
     public Optional<User> findById(UUID id) {
