@@ -34,7 +34,7 @@ public class UserService {
         }
 
         User user = mapper.toEntity(req);
-        user.setSenha(encoder.encode(user.getSenha()));
+        user.setSenha(user.getSenha());
         return repo.save(user);
     }
 
