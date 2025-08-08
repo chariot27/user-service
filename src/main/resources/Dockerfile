@@ -11,6 +11,7 @@ RUN gradle bootJar -x test
 
 # 🐳 Etapa 2: Imagem final com JDK leve
 FROM eclipse-temurin:17-jdk-alpine
+ENV JAVA_TOOL_OPTIONS="-XX:+UseG1GC -XX:+UseContainerSupport -XX:MaxRAMPercentage=75.0"
 
 WORKDIR /app
 
