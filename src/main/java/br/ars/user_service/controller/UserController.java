@@ -3,6 +3,7 @@ package br.ars.user_service.controller;
 import java.util.UUID;
 
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
@@ -24,7 +25,7 @@ public class UserController {
         this.service = service;
     }
 
-    @PostMapping(value = "/register", consumes = "multipart/form-data")
+    @PostMapping(value = "/register", consumes = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<User> register(
             @RequestPart("data") RegisterRequest request,
             @RequestPart(name = "avatar", required = false) MultipartFile avatar) {
