@@ -39,7 +39,7 @@ public class UserService {
         this.bunny = bunny;
     }
 
-    /** 📥 Registro com UUID gerado pelo banco + upload do avatar após obter o ID */
+    /** 📥 Registro com UUID gerado pelo banco + upload usando nome enviado no JSON */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
         if (repo.findByEmail(req.getEmail()).isPresent()) {
@@ -54,11 +54,24 @@ public class UserService {
             // 2) salvar primeiro para gerar o ID (UUID do banco/JPA)
             user = repo.save(user); // saveAndFlush(user) se precisar do ID imediatamente
 
-            // 3) se veio avatar, subir agora e persistir a URL completa no avatarUrl
+            // 3) se veio avatar, usar o NOME do JSON (req.getAvatarUrl) como base
             if (avatar != null && !avatar.isEmpty()) {
-                String returned = bunny.uploadAvatar(avatar, user.getId().toString()); // pode ser URL completa ou caminho relativo
+                String ext = guessExt(avatar.getOriginalFilename(), avatar.getContentType());
+                if (ext == null) ext = "jpg";
 
-                // Normaliza para URL completa: CDN + caminho (se necessário)
+                String desired = req.getAvatarUrl(); // no JSON vem o nome desejado
+                String baseName = sanitizeFileBase(desired != null ? desired : user.getId().toString());
+
+                // remove extensão caso o cliente tenha mandado
+                int dot = baseName.lastIndexOf('.');
+                if (dot > 0) baseName = baseName.substring(0, dot);
+
+                String finalFileName = baseName + "." + ext;   // ex.: "perfil_do_joao.webp"
+                String subfolder = user.getId().toString();    // users/{id}/
+
+                String returned = bunny.uploadWithName(avatar, subfolder, finalFileName);
+
+                // Normaliza p/ URL completa se por acaso voltar relativo
                 String base = cdnBaseUrl.endsWith("/") ? cdnBaseUrl.substring(0, cdnBaseUrl.length() - 1) : cdnBaseUrl;
                 String finalUrl = (returned != null && returned.startsWith("http"))
                         ? returned
@@ -75,6 +88,7 @@ public class UserService {
         }
     }
 
+    /** 🔍 Perfil por e-mail com avatar vindo do CDN */
     public PerfilResponse getPerfilByEmail(String email) {
         User user = repo.findByEmail(email)
             .orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
@@ -99,7 +113,6 @@ public class UserService {
 
         return perfil;
     }
-
 
     /** 🔐 Login (inalterado) */
     public String authenticateAndGenerateToken(String email, String rawPassword) {
@@ -129,5 +142,33 @@ public class UserService {
             throw new RuntimeException("Usuário não encontrado para deletar.");
         }
         repo.deleteById(id);
+    }
+
+    /* ===== helpers ===== */
+
+    private String sanitizeFileBase(String input) {
+        if (input == null || input.isBlank()) return "avatar";
+        String base = java.text.Normalizer.normalize(input, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "")              // remove acentos
+                .replaceAll("[^a-zA-Z0-9-_.]", "_")     // não-alfanum => _
+                .replaceAll("_+", "_")                  // colapsa _
+                .replaceAll("(^_|_$)", "")              // trim _
+                .toLowerCase();
+        return base.isBlank() ? "avatar" : base;
+    }
+
+    private String guessExt(String original, String contentType) {
+        if (original != null && original.contains(".")) {
+            String ex = original.substring(original.lastIndexOf('.') + 1).toLowerCase();
+            if (ex.matches("[a-z0-9]{1,5}")) return ex;
+        }
+        if (contentType == null) return null;
+        switch (contentType) {
+            case "image/png": return "png";
+            case "image/jpeg": return "jpg";
+            case "image/webp": return "webp";
+            case "image/gif": return "gif";
+            default: return null;
+        }
     }
 }

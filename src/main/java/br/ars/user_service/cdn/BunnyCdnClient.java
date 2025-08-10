@@ -31,15 +31,26 @@ public class BunnyCdnClient {
 
     private final RestTemplate restTemplate = new RestTemplate();
 
-    /** Envia avatar: users/{uuid}/{uuid}_avatar.ext → retorna URL pública no CDN */
+    /** Envia avatar: users/{uuid}/{uuid}_avatar.ext -> retorna URL pública */
     public String uploadAvatar(MultipartFile file, String userUuid) {
         if (file == null || file.isEmpty()) return null;
 
         String ext = guessExt(file.getOriginalFilename(), file.getContentType());
         String fileName = userUuid + "_avatar" + (ext != null ? "." + ext : "");
-        String path = folderPrefix + "/" + userUuid + "/"; // users/{uuid}/
+        return uploadInternal(file, folderPrefix + "/" + userUuid + "/", fileName);
+    }
 
-        String storageUrl = String.format("%s/%s/%s%s", baseUrl, zoneName, path, fileName);
+    /** Upload com nome final definido por você (ex.: "perfil_do_joao.webp") */
+    public String uploadWithName(MultipartFile file, String subfolder, String finalFileName) {
+        if (file == null || file.isEmpty()) return null;
+        String base = folderPrefix.endsWith("/") ? folderPrefix : folderPrefix + "/";
+        String path = base + (subfolder != null && !subfolder.isBlank() ? subfolder + "/" : "");
+        return uploadInternal(file, path, finalFileName);
+    }
+
+    /** Core */
+    private String uploadInternal(MultipartFile file, String path, String finalFileName) {
+        String storageUrl = String.format("%s/%s/%s%s", baseUrl, zoneName, path, finalFileName);
 
         try {
             byte[] bytes = StreamUtils.copyToByteArray(file.getInputStream());
@@ -47,7 +58,7 @@ public class BunnyCdnClient {
             HttpHeaders headers = new HttpHeaders();
             headers.set("AccessKey", accessKey);
             headers.setContentType(MediaType.parseMediaType(
-                file.getContentType() != null ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE));
+                    file.getContentType() != null ? file.getContentType() : MediaType.APPLICATION_OCTET_STREAM_VALUE));
             headers.setContentLength(bytes.length);
 
             HttpEntity<byte[]> entity = new HttpEntity<>(bytes, headers);
@@ -57,9 +68,8 @@ public class BunnyCdnClient {
                 throw new RuntimeException("Falha upload Bunny: " + resp.getStatusCode());
             }
 
-            // Monta URL pública (evita encode de '/')
-            String safe = URLEncoder.encode(path + fileName, StandardCharsets.UTF_8)
-                    .replace("+","%20").replace("%2F","/");
+            String safe = URLEncoder.encode(path + finalFileName, StandardCharsets.UTF_8)
+                    .replace("+", "%20").replace("%2F", "/");
             return (publicCdnBase.endsWith("/") ? publicCdnBase : publicCdnBase + "/") + safe;
 
         } catch (IOException e) {

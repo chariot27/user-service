@@ -2,6 +2,8 @@ package br.ars.user_service.controller;
 
 import java.util.UUID;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
+
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
@@ -20,18 +22,25 @@ import br.ars.user_service.service.UserService;
 public class UserController {
 
     private final UserService service;
+    private final ObjectMapper objectMapper = new ObjectMapper();
 
     public UserController(UserService service) {
         this.service = service;
     }
 
-    @PostMapping(value = "/register", consumes = MediaType.APPLICATION_JSON_VALUE)
+    // Espera multipart: "data" (JSON do RegisterRequest) + "avatar" (arquivo)
+    @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<User> register(
-            @RequestPart("data") RegisterRequest request,
+            @RequestPart("data") String data,
             @RequestPart(name = "avatar", required = false) MultipartFile avatar) {
 
-        User user = service.register(request, avatar);
-        return ResponseEntity.status(HttpStatus.CREATED).body(user);
+        try {
+            RegisterRequest request = objectMapper.readValue(data, RegisterRequest.class);
+            User user = service.register(request, avatar);
+            return ResponseEntity.status(HttpStatus.CREATED).body(user);
+        } catch (Exception ex) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+        }
     }
 
     @GetMapping("/{id}")
@@ -41,7 +50,7 @@ public class UserController {
                 .orElse(ResponseEntity.notFound().build());
     }
 
-    /** Novo endpoint para buscar perfil por e-mail */
+    /** Buscar perfil por e-mail */
     @GetMapping("/perfil/{email}")
     public ResponseEntity<PerfilResponse> getPerfilByEmail(@PathVariable String email) {
         try {
