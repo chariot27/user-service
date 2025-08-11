@@ -13,15 +13,17 @@ import org.mapstruct.ReportingPolicy;
 )
 public interface UserMapper {
 
-    // Se o ID é gerado pelo banco, ignoramos o id ao mapear do DTO
+    // id é gerado pelo banco
     @Mapping(target = "id", ignore = true)
-    // Corrige o alvo: avatarUrl -> avatarUrl (NÃO "avatar")
-    @Mapping(source = "avatarUrl", target = "avatarUrl")
+    // avatarUrl será setado após o upload para o CDN
+    @Mapping(target = "avatarUrl", ignore = true)
+    // String -> Enum (UserType)
+    @Mapping(target = "tipo",
+        expression = "java(dto.getTipo()!=null ? br.ars.user_service.enums.UserType.valueOf(dto.getTipo()) : null)")
     User toEntity(RegisterRequest dto);
 
-    // Converte User -> PerfilResponse
-    // Converte enum UserType para String no DTO
-    @Mapping(target = "tipo", expression = "java(user.getTipo() != null ? user.getTipo().name() : null)")
+    // User -> PerfilResponse (Enum -> String)
+    @Mapping(target = "tipo", expression = "java(user.getTipo()!=null ? user.getTipo().name() : null)")
     @Mapping(source = "avatarUrl", target = "avatarUrl")
     PerfilResponse toPerfilResponse(User user);
 }

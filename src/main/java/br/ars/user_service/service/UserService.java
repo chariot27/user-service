@@ -39,26 +39,31 @@ public class UserService {
         this.bunny = bunny;
     }
 
-    /** Registro com UUID do banco + upload do avatar usando o nome desejado no DTO */
+    /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
-        if (repo.findByEmail(req.getEmail()).isPresent()) {
+        // 1) unicidade
+        repo.findByEmail(req.getEmail()).ifPresent(u -> {
             throw new IllegalArgumentException("Email já cadastrado.");
-        }
+        });
 
         try {
-            // mapear + criptografar
+            // 2) map + hash da senha
             User user = mapper.toEntity(req);
+            if (user.getSenha() == null || user.getSenha().isBlank()) {
+                throw new IllegalArgumentException("Senha obrigatória.");
+            }
             user.setSenha(encoder.encode(user.getSenha()));
 
-            // salva primeiro pra gerar o ID
+            // 3) persiste para gerar UUID
             user = repo.save(user);
 
-            // upload se veio arquivo
+            // 4) upload opcional -> grava URL pública final no avatarUrl
             if (avatar != null && !avatar.isEmpty()) {
-                String desiredName = req.getAvatarUrl(); // nome base vindo do app
-                String finalUrl = bunny.uploadAvatar(avatar, user.getId().toString(), desiredName);
-                user.setAvatarUrl(finalUrl);             // URL completa, com extensão
+                // baseName vindo do nome do usuário (primeira palavra)
+                String baseName = req.getNome();
+                String finalUrl = bunny.uploadAvatar(avatar, user.getId().toString(), baseName);
+                user.setAvatarUrl(finalUrl);
                 user = repo.save(user);
             }
 
@@ -69,7 +74,6 @@ public class UserService {
         }
     }
 
-    // ... (demais métodos iguais)
     public PerfilResponse getPerfilByEmail(String email) {
         User user = repo.findByEmail(email)
             .orElseThrow(() -> new RuntimeException("Usuário não encontrado."));

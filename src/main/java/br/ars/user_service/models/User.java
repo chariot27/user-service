@@ -43,6 +43,8 @@ public class User {
     @Column(name = "tag")
     private List<String> tags;
 
+    @ElementCollection
+    @CollectionTable(name = "avatar_urls", joinColumns = @JoinColumn(name = "user_id"))
     @Column(name = "Avatar")
     private String avatarUrl;
 
