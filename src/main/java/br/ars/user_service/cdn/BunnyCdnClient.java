@@ -1,13 +1,15 @@
 package br.ars.user_service.cdn;
 
-import net.coobird.thumbnailator.Thumbnails;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.ByteArrayOutputStream;
+import com.sksamuel.scrimage.ImmutableImage;
+import com.sksamuel.scrimage.nio.ImageWriter;
+import com.sksamuel.scrimage.webp.WebpWriter;
+
 import java.io.IOException;
 import java.net.URLEncoder;
 import java.nio.charset.StandardCharsets;
@@ -20,7 +22,7 @@ public class BunnyCdnClient {
     @Value("${bunny.storage.zone-name}")
     private String zoneName;             // ex.: sua_storage_zone
     @Value("${bunny.storage.access-key}")
-    private String accessKey;            // atenção: propriedade é access-key
+    private String accessKey;            // header AccessKey
     @Value("${bunny.storage.folder-prefix:users}")
     private String folderPrefix;         // ex.: users
     @Value("${bunny.cdn.base-url}")
@@ -32,14 +34,9 @@ public class BunnyCdnClient {
      * Converte a imagem para WEBP e envia ao Bunny Storage.
      * Retorna a URL pública no formato:
      * https://<pullzone>/users/<primeiroNome><uuid>.webp
-     *
-     * Mantém o nome do método.
      */
     public String uploadAvatar(MultipartFile file, String userUuid, String desiredBaseName) {
         if (file == null || file.isEmpty()) return null;
-
-        // Extensão sempre webp após conversão
-        String ext = "webp";
 
         // primeira palavra do nome -> "max" a partir de "Max da Silva"
         String baseFromName = buildBaseFromFullName(desiredBaseName);
@@ -49,7 +46,7 @@ public class BunnyCdnClient {
         }
 
         // users/<nome><uuid>.webp
-        String fileName = safeBase + userUuid + "." + ext;
+        String fileName = safeBase + userUuid + ".webp";
         String path = trimLeftRight(folderPrefix, "/") + "/"; // "users/"
 
         // URL de upload (Storage Zone)
@@ -57,8 +54,8 @@ public class BunnyCdnClient {
                 trimRight(baseUrl), zoneName, path, fileName);
 
         try {
-            // 1) Converte qualquer formato recebido para WEBP
-            byte[] webpBytes = convertToWebp(file);
+            // 1) Converte qualquer formato recebido para WEBP (writer padrão)
+            byte[] webpBytes = toWebp(file, 0); // maxSize=0 => sem redimensionar
 
             // 2) Envia para o Bunny Storage
             HttpHeaders headers = new HttpHeaders();
@@ -83,19 +80,22 @@ public class BunnyCdnClient {
         }
     }
 
-    // ---- Helpers ----
+    // ---- Helpers de imagem (Scrimage) ----
 
-    // Converte a imagem recebida para WEBP usando Thumbnailator.
-    // Ajuste opcional: .outputQuality(0.8) para comprimir; .size(512, 512) para redimensionar.
-    private byte[] convertToWebp(MultipartFile file) throws IOException {
-        ByteArrayOutputStream baos = new ByteArrayOutputStream();
-        Thumbnails.of(file.getInputStream())
-                  .scale(1.0)             // mantém dimensão original
-                  .outputFormat("webp")   // força WEBP
-                  // .outputQuality(0.8)  // (opcional) qualidade/compactação
-                  .toOutputStream(baos);
-        return baos.toByteArray();
+    /**
+     * Converte para WEBP usando o writer padrão da lib.
+     * @param maxSize se >0, redimensiona para no máx. maxSize x maxSize (preserva proporção)
+     */
+    private byte[] toWebp(MultipartFile file, int maxSize) throws IOException {
+        ImmutableImage image = ImmutableImage.loader().fromStream(file.getInputStream());
+        if (maxSize > 0) {
+            image = image.max(maxSize, maxSize); // limita dimensões mantendo aspect ratio
+        }
+        ImageWriter writer = WebpWriter.DEFAULT;   // sem ajuste de quality nessa versão
+        return image.bytes(writer);                // retorna bytes em WEBP
     }
+
+    // ---- Helpers gerais ----
 
     private String trimRight(String s) {
         return (s != null && s.endsWith("/")) ? s.substring(0, s.length() - 1) : s;
