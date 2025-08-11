@@ -28,9 +28,17 @@ public class UserController {
         this.service = service;
     }
 
-    // Espera multipart: "data" (JSON do RegisterRequest) + "avatar" (arquivo)
-    @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
-    public ResponseEntity<User> register(
+    /**
+     * Espera multipart:
+     *  - part "data": JSON do RegisterRequest (enviado como application/json ou text/plain)
+     *  - part "avatar": arquivo de imagem (opcional)
+     */
+    @PostMapping(
+        value = "/register",
+        consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
+        produces = MediaType.APPLICATION_JSON_VALUE
+    )
+    public ResponseEntity<?> register(
             @RequestPart("data") String data,
             @RequestPart(name = "avatar", required = false) MultipartFile avatar) {
 
@@ -38,8 +46,14 @@ public class UserController {
             RegisterRequest request = objectMapper.readValue(data, RegisterRequest.class);
             User user = service.register(request, avatar);
             return ResponseEntity.status(HttpStatus.CREATED).body(user);
+        } catch (com.fasterxml.jackson.core.JsonProcessingException jpe) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
+                    .body("JSON inválido no part 'data': " + jpe.getOriginalMessage());
+        } catch (IllegalArgumentException iae) {
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(iae.getMessage());
         } catch (Exception ex) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).build();
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body("Falha ao registrar usuário: " + ex.getMessage());
         }
     }
 
