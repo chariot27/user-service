@@ -161,7 +161,6 @@ public class UserService {
         perfil.setTelefone(user.getTelefone());
         perfil.setTipo(user.getTipo() != null ? user.getTipo().name() : null);
         perfil.setBio(user.getBio());
-        perfil.setTags(user.getTags());
         perfil.setAvatarUrl(user.getAvatarUrl() != null && !user.getAvatarUrl().isBlank()
                 ? user.getAvatarUrl() : null);
         return perfil;

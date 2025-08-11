@@ -8,7 +8,6 @@ public class PerfilResponse {
     public String telefone;
     public String tipo;
     public String bio;
-    public List<String> tags;
     public String avatarUrl;
 
     public String getNome() {
@@ -35,12 +34,7 @@ public class PerfilResponse {
     public void setBio(String bio) {
         this.bio = bio;
     }
-    public List<String> getTags() {
-        return tags;
-    }
-    public void setTags(List<String> tags) {
-        this.tags = tags;
-    }
+
     public String getAvatarUrl() {
         return avatarUrl;
     }
