@@ -14,26 +14,26 @@ import java.nio.charset.StandardCharsets;
 @Component
 public class BunnyCdnClient {
 
-    @Value("${bunny.storage.base-url}")       // ex.: https://storage.bunnycdn.com
+    @Value("${bunny.storage.base-url}")             // ex.: https://storage.bunnycdn.com
     private String baseUrl;
 
-    @Value("${bunny.storage.zone-name}")      // ex.: sua_storage_zone
+    @Value("${bunny.storage.zone-name}")            // ex.: sua_storage_zone
     private String zoneName;
 
-    @Value("${bunny.storage.access-key}")     // header AccessKey
+    @Value("${bunny.storage.access-key}")           // header AccessKey
     private String accessKey;
 
-    @Value("${bunny.storage.folder-prefix:users}") // ex.: users
+    @Value("${bunny.storage.folder-prefix:users}")  // ex.: users (usado no método compat)
     private String folderPrefix;
 
-    @Value("${bunny.cdn.base-url}")           // ex.: https://ars-vnh.b-cdn.net
+    @Value("${bunny.cdn.base-url}")                 // ex.: https://ars-vnh.b-cdn.net
     private String publicCdnBase;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
     /**
-     * NOVO: sobe o arquivo usando a key já montada (ex.: "users/max<uuid>.jpg").
-     * Não retorna URL; apenas executa o PUT no Storage.
+     * Sobe o arquivo usando a key já montada (ex.: "users/max<uuid>.jpg").
+     * NÃO retorna URL; apenas executa o PUT no Storage.
      */
     public void uploadAvatar(MultipartFile file, String key) {
         if (file == null || file.isEmpty()) {
@@ -41,14 +41,12 @@ public class BunnyCdnClient {
         }
         try {
             byte[] bytes = StreamUtils.copyToByteArray(file.getInputStream());
-            String contentType = file.getContentType();
-            if (contentType == null || contentType.isBlank()) {
-                contentType = "application/octet-stream";
-            }
+            String contentType = (file.getContentType() != null && !file.getContentType().isBlank())
+                    ? file.getContentType()
+                    : "application/octet-stream";
 
-            String path = trimLeftRight(key, "/"); // garante que não entre com // duplicado
-            String storageUrl = String.format("%s/%s/%s",
-                    trimRight(baseUrl), zoneName, path);
+            String path = trimLeftRight(key, "/"); // evita // duplicado
+            String storageUrl = String.format("%s/%s/%s", trimRight(baseUrl), zoneName, path);
 
             HttpHeaders headers = new HttpHeaders();
             headers.set("AccessKey", accessKey);
@@ -66,16 +64,19 @@ public class BunnyCdnClient {
     }
 
     /**
-     * Assinatura original: constrói automaticamente "users/<primeiroNome><uuid>.<ext>"
-     * e retorna a URL pública. Mantida por compatibilidade.
+     * Assinatura de compatibilidade:
+     * Constrói automaticamente "users/<primeiroNome><uuid>.<ext>", faz o upload
+     * e retorna a URL pública final.
      */
     public String uploadAvatar(MultipartFile file, String userUuid, String desiredBaseName) {
         if (file == null || file.isEmpty()) return null;
 
+        // base "max" a partir do nome desejado
         String baseFromName = buildBaseFromFullName(desiredBaseName);
         String safeBase = sanitizeBaseName(baseFromName);
         if (safeBase == null || safeBase.isBlank()) safeBase = "user";
 
+        // tenta detectar extensão
         String ext = guessExt(file.getOriginalFilename(), file.getContentType());
         String fileName = (ext != null && !ext.isBlank())
                 ? (safeBase + userUuid + "." + ext)
@@ -84,10 +85,10 @@ public class BunnyCdnClient {
         String folder = trimLeftRight(folderPrefix, "/");
         String key = (folder.isBlank() ? "" : folder + "/") + fileName;
 
-        // Faz o upload usando a nova assinatura
+        // faz upload usando a key já montada
         uploadAvatar(file, key);
 
-        // Monta e retorna a URL pública
+        // monta URL pública e retorna
         String safe = URLEncoder.encode(key, StandardCharsets.UTF_8)
                 .replace("+", "%20")
                 .replace("%2F", "/");
@@ -127,10 +128,6 @@ public class BunnyCdnClient {
     }
 
     private String guessExt(String original, String contentType) {
-        if (original != null && original.contains(".")) {
-            String ext = original.substring(original.lastIndexOf('.') + 1).toLowerCase();
-            if (ext.matches("[a-z0-9]{1,6}")) return ext;
-        }
         if (contentType != null) {
             switch (contentType.toLowerCase()) {
                 case "image/png":  return "png";
@@ -144,6 +141,10 @@ public class BunnyCdnClient {
                 case "image/heif": return "heif";
             }
         }
-        return null;
+        if (original != null && original.contains(".")) {
+            String ext = original.substring(original.lastIndexOf('.') + 1).toLowerCase();
+            if (ext.matches("[a-z0-9]{1,6}")) return ext;
+        }
+        return "jpg";
     }
 }

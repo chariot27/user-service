@@ -46,7 +46,7 @@ public class UserService {
         this.bunny = bunny;
     }
 
-    /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
+    /** Registro com UUID do banco + upload do avatar no padrão: users/<primeiroNome><uuid>.<ext> */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
         // 0) valida formato e domínio MX antes de qualquer coisa
@@ -80,30 +80,34 @@ public class UserService {
 
             // 4) upload opcional -> grava URL pública final no avatarUrl
             if (avatar != null && !avatar.isEmpty()) {
-                // baseName = primeiro nome saneado
-                String baseName = req.getNome();
-                if (baseName == null) baseName = "user";
-                baseName = baseName.trim();
+                // baseName: usa sugestão do front (avatarUrl) se vier; senão, o nome
+                String baseName = (getSafe(req.getAvatarUrl()) != null)
+                        ? req.getAvatarUrl()
+                        : req.getNome();
+
+                // saneia: pega primeiro token, remove chars inválidos e baixa caixa
+                baseName = (baseName == null ? "user" : baseName.trim());
                 if (baseName.isEmpty()) baseName = "user";
-                baseName = baseName.split("\\s+")[0].replaceAll("[^A-Za-z0-9_-]", "").toLowerCase();
+                baseName = baseName.split("\\s+")[0]
+                        .replaceAll("[^A-Za-z0-9_-]", "")
+                        .toLowerCase();
                 if (baseName.isEmpty()) baseName = "user";
 
-                // extrai extensão do arquivo
-                String originalFilename = avatar.getOriginalFilename();
-                String ext = "png";
-                if (originalFilename != null && originalFilename.contains(".")) {
-                    ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase();
-                }
+                // extensão: tenta pelo content-type; senão pelo filename; default jpg
+                String ext = resolveExt(avatar);
 
-                // monta nome final: users/max<uuid>.<ext>
+                // monta nome final e key: users/max<uuid>.<ext>
                 String fileName = baseName + user.getId().toString() + "." + ext;
                 String key = "users/" + fileName;
 
-                // envia pro CDN usando a key (assinatura de 2 parâmetros)
+                // envia pro CDN usando a key (método de 2 parâmetros)
                 bunny.uploadAvatar(avatar, key);
 
-                // monta URL pública
-                String finalUrl = "https://ars-vnh.b-cdn.net/" + key;
+                // monta URL pública a partir da propriedade (sem hardcode)
+                String base = cdnBaseUrl != null && cdnBaseUrl.endsWith("/")
+                        ? cdnBaseUrl.substring(0, cdnBaseUrl.length() - 1)
+                        : cdnBaseUrl;
+                String finalUrl = base + "/" + key;
 
                 user.setAvatarUrl(finalUrl);
                 user = repo.save(user);
@@ -156,6 +160,10 @@ public class UserService {
 
     // ===== helpers =====
 
+    private String getSafe(String s) {
+        return (s != null && !s.isBlank()) ? s : null;
+    }
+
     /** Validação simples de formato de e-mail */
     private boolean isValidEmailFormat(String email) {
         String e = email.trim();
@@ -185,5 +193,29 @@ public class UserService {
         } catch (NamingException | StringIndexOutOfBoundsException ex) {
             return false;
         }
+    }
+
+    /** Resolve extensão com base no content-type > filename; default "jpg" */
+    private String resolveExt(MultipartFile avatar) {
+        String ct = avatar.getContentType();
+        if (ct != null) {
+            switch (ct.toLowerCase()) {
+                case "image/png":  return "png";
+                case "image/jpeg":
+                case "image/jpg":  return "jpg";
+                case "image/webp": return "webp";
+                case "image/gif":  return "gif";
+                case "image/bmp":  return "bmp";
+                case "image/svg+xml": return "svg";
+                case "image/heic": return "heic";
+                case "image/heif": return "heif";
+            }
+        }
+        String originalFilename = avatar.getOriginalFilename();
+        if (originalFilename != null && originalFilename.contains(".")) {
+            String ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase();
+            if (ext.matches("[a-z0-9]{1,6}")) return ext;
+        }
+        return "jpg";
     }
 }
