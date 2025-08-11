@@ -10,8 +10,7 @@ import javax.naming.directory.Attributes;
 import javax.naming.directory.DirContext;
 import javax.naming.directory.InitialDirContext;
 
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -27,10 +26,9 @@ import br.ars.user_service.security.JwtUtil;
 
 import jakarta.transaction.Transactional;
 
+@Slf4j
 @Service
 public class UserService {
-
-    private static final Logger log = LoggerFactory.getLogger(UserService.class);
 
     private final UserRepository repo;
     private final UserMapper mapper;
@@ -50,7 +48,7 @@ public class UserService {
         this.bunny = bunny;
     }
 
-    /** Registro com UUID do banco + upload do avatar no padrão: users/<primeiroNome><uuid>.<ext> */
+    /** Síncrono (controller chama direto). */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
         log.info("[UserService] Iniciando registro | email={} | nome={} | avatarPresente={}",
@@ -58,102 +56,100 @@ public class UserService {
                 req != null ? req.getNome() : null,
                 (avatar != null && !avatar.isEmpty()));
 
-        // 0) valida formato e domínio MX antes de qualquer coisa
         final String rawEmail = req.getEmail();
         if (rawEmail == null || !isValidEmailFormat(rawEmail)) {
             log.warn("[UserService] E-mail inválido | rawEmail={}", rawEmail);
             throw new IllegalArgumentException("E-mail inválido.");
         }
-        log.debug("[UserService] Checando MX para domínio do e-mail {}", rawEmail);
         if (!domainHasMX(rawEmail)) {
             log.warn("[UserService] Domínio sem MX | email={}", rawEmail);
             throw new IllegalArgumentException("Domínio de e-mail sem MX válido. Verifique o endereço informado.");
         }
 
-        // normaliza e-mail ANTES da unicidade
         final String email = rawEmail.trim().toLowerCase();
-        log.debug("[UserService] E-mail normalizado={}", email);
+        repo.findByEmail(email).ifPresent(u -> { throw new IllegalArgumentException("Email já cadastrado."); });
 
-        // 1) unicidade
-        repo.findByEmail(email).ifPresent(u -> {
-            log.warn("[UserService] Email já cadastrado | email={}", email);
-            throw new IllegalArgumentException("Email já cadastrado.");
-        });
-
-        try {
-            // 2) map + hash da senha
-            User user = mapper.toEntity(req);
-            if (user.getSenha() == null || user.getSenha().isBlank()) {
-                log.warn("[UserService] Senha ausente no request para email={}", email);
-                throw new IllegalArgumentException("Senha obrigatória.");
-            }
-            user.setEmail(email); // já normalizado
-            user.setSenha(encoder.encode(user.getSenha()));
-
-            // 3) persiste para gerar UUID
-            user = repo.save(user);
-            log.info("[UserService] Usuário persistido | id={} | email={}", user.getId(), user.getEmail());
-
-            // 4) upload opcional -> grava URL pública final no avatarUrl
-            if (avatar == null) {
-                log.info("[UserService] Sem avatar no request, finalizando registro sem upload.");
-                return user;
-            }
-            if (avatar.isEmpty()) {
-                log.warn("[UserService] Avatar vazio (MultipartFile.isEmpty=true), ignorando upload.");
-                return user;
-            }
-
-            // baseName: usa sugestão do front (avatarUrl) se vier; senão, o nome
-            String baseName = (getSafe(req.getAvatarUrl()) != null)
-                    ? req.getAvatarUrl()
-                    : req.getNome();
-
-            // saneia: pega primeiro token, remove chars inválidos e baixa caixa
-            String originalBaseName = baseName;
-            baseName = (baseName == null ? "user" : baseName.trim());
-            if (baseName.isEmpty()) baseName = "user";
-            baseName = baseName.split("\\s+")[0]
-                    .replaceAll("[^A-Za-z0-9_-]", "")
-                    .toLowerCase();
-            if (baseName.isEmpty()) baseName = "user";
-
-            // extensão: tenta pelo content-type; senão pelo filename; default jpg
-            String ext = resolveExt(avatar);
-
-            // monta nome final e key: users/max<uuid>.<ext>
-            String fileName = baseName + user.getId().toString() + "." + ext;
-            String key = "users/" + fileName;
-
-            log.info("[UserService] Upload avatar | originalBaseName={} | baseName={} | ext={} | key={}",
-                    originalBaseName, baseName, ext, key);
-            log.debug("[UserService] avatar.originalFilename={} | avatar.size(reported)={} | avatar.contentType={}",
-                    avatar.getOriginalFilename(), avatar.getSize(), avatar.getContentType());
-
-            // envia pro CDN usando a key (método de 2 parâmetros)
-            bunny.uploadAvatar(avatar, key);
-
-            // monta URL pública a partir da propriedade (sem hardcode)
-            if (cdnBaseUrl == null || cdnBaseUrl.isBlank()) {
-                log.error("[UserService] bunny.cdn.base-url não configurado! Não é possível montar avatarUrl.");
-                throw new IllegalStateException("Configuração CDN ausente.");
-            }
-            String base = cdnBaseUrl.endsWith("/") ? cdnBaseUrl.substring(0, cdnBaseUrl.length() - 1) : cdnBaseUrl;
-            String finalUrl = base + "/" + key;
-
-            log.info("[UserService] URL pública do avatar gerada | avatarUrl={}", finalUrl);
-
-            user.setAvatarUrl(finalUrl);
-            user = repo.save(user);
-
-            log.info("[UserService] Registro concluído | id={} | avatarUrl={}", user.getId(), user.getAvatarUrl());
-            return user;
-
-        } catch (Exception e) {
-            log.error("[UserService] Erro ao registrar usuário | email={} | msg={}", email, e.getMessage(), e);
-            throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
+        User user = mapper.toEntity(req);
+        if (user.getSenha() == null || user.getSenha().isBlank()) {
+            throw new IllegalArgumentException("Senha obrigatória.");
         }
+        user.setEmail(email);
+        user.setSenha(encoder.encode(user.getSenha()));
+        user = repo.save(user);
+        log.info("[UserService] Usuário persistido | id={} | email={}", user.getId(), user.getEmail());
+
+        if (avatar == null || avatar.isEmpty()) {
+            log.info("[UserService] Sem avatar (MultipartFile nulo/vazio) — finalizando registro sem upload.");
+            return user;
+        }
+
+        String baseName = sanitizeBaseName(firstWordOrDefault(req.getNome(), "user"));
+        String ext = resolveExt(avatar.getContentType(), avatar.getOriginalFilename());
+        String key = "users/" + baseName + user.getId().toString() + "." + ext;
+
+        log.info("[UserService] Upload avatar (multipart) | key={} | ct={} | size={}",
+                key, avatar.getContentType(), avatar.getSize());
+
+        bunny.uploadAvatar(avatar, key);
+
+        String finalUrl = normalizedCdnBase() + "/" + key;
+        user.setAvatarUrl(finalUrl);
+        user = repo.save(user);
+        log.info("[UserService] AvatarUrl setado={}", user.getAvatarUrl());
+
+        return user;
     }
+
+    /** Assíncrono (worker da fila chama este overload com BYTES). */
+    @Transactional
+    public User register(RegisterRequest req, byte[] avatarBytes, String filename, String contentType) {
+        log.info("[UserService] Iniciando registro (BYTES) | email={} | nome={} | hasBytes={}",
+                req != null ? req.getEmail() : null,
+                req != null ? req.getNome() : null,
+                avatarBytes != null && avatarBytes.length > 0);
+
+        final String rawEmail = req.getEmail();
+        if (rawEmail == null || !isValidEmailFormat(rawEmail)) {
+            throw new IllegalArgumentException("E-mail inválido.");
+        }
+        if (!domainHasMX(rawEmail)) {
+            throw new IllegalArgumentException("Domínio de e-mail sem MX válido. Verifique o endereço informado.");
+        }
+
+        final String email = rawEmail.trim().toLowerCase();
+        repo.findByEmail(email).ifPresent(u -> { throw new IllegalArgumentException("Email já cadastrado."); });
+
+        User user = mapper.toEntity(req);
+        if (user.getSenha() == null || user.getSenha().isBlank()) {
+            throw new IllegalArgumentException("Senha obrigatória.");
+        }
+        user.setEmail(email);
+        user.setSenha(encoder.encode(user.getSenha()));
+        user = repo.save(user);
+        log.info("[UserService] Usuário persistido | id={} | email={}", user.getId(), user.getEmail());
+
+        if (avatarBytes == null || avatarBytes.length == 0) {
+            log.info("[UserService] Sem avatarBytes — finalizando registro sem upload.");
+            return user;
+        }
+
+        String baseName = sanitizeBaseName(firstWordOrDefault(req.getNome(), "user"));
+        String ext = resolveExt(contentType, filename);
+        String key = "users/" + baseName + user.getId().toString() + "." + ext;
+
+        log.info("[UserService] Upload avatar (bytes) | key={} | ct={} | bytes={}", key, contentType, avatarBytes.length);
+
+        bunny.uploadBytes(avatarBytes, contentType, key);
+
+        String finalUrl = normalizedCdnBase() + "/" + key;
+        user.setAvatarUrl(finalUrl);
+        user = repo.save(user);
+        log.info("[UserService] AvatarUrl setado={}", user.getAvatarUrl());
+
+        return user;
+    }
+
+    // ===== demais métodos da sua classe =====
 
     @Transactional
     public PerfilResponse getPerfilByEmail(String email) {
@@ -195,59 +191,32 @@ public class UserService {
 
     // ===== helpers =====
 
-    private String getSafe(String s) {
-        return (s != null && !s.isBlank()) ? s : null;
-    }
-
-    /** Validação simples de formato de e-mail */
-    private boolean isValidEmailFormat(String email) {
-        String e = email.trim();
-        boolean ok = e.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
-        if (!ok) log.debug("[UserService] isValidEmailFormat reprovou | email={}", email);
-        return ok;
-    }
-
-    /** Checa se o domínio do e-mail possui pelo menos um registro MX (com logs) */
-    private boolean domainHasMX(String email) {
-        try {
-            String domain = email.substring(email.indexOf('@') + 1).trim();
-            if (domain.isEmpty()) {
-                log.debug("[UserService] domainHasMX: domínio vazio extraído de {}", email);
-                return false;
-            }
-
-            log.debug("[UserService] domainHasMX: consultando DNS para domínio={}", domain);
-            Hashtable<String, String> env = new Hashtable<>();
-            env.put("java.naming.factory.initial", "com.sun.jndi.dns.DnsContextFactory");
-            env.put("com.sun.jndi.dns.timeout.initial", "2000"); // ms
-            env.put("com.sun.jndi.dns.timeout.retries", "1");
-
-            DirContext ictx = new InitialDirContext(env);
-            Attributes attrs = ictx.getAttributes(domain, new String[] { "MX" });
-            Attribute attr = attrs.get("MX");
-            if (attr != null && attr.size() > 0) {
-                log.debug("[UserService] domainHasMX: MX encontrado | count={} | domain={}", attr.size(), domain);
-                return true;
-            }
-
-            // fallback A/AAAA
-            attrs = ictx.getAttributes(domain, new String[] { "A", "AAAA" });
-            boolean hasA = (attrs.get("A") != null);
-            boolean hasAAAA = (attrs.get("AAAA") != null);
-            log.debug("[UserService] domainHasMX: fallback A/AAAA | A={} | AAAA={} | domain={}", hasA, hasAAAA, domain);
-            return hasA || hasAAAA;
-
-        } catch (NamingException | StringIndexOutOfBoundsException ex) {
-            log.warn("[UserService] domainHasMX: exceção DNS | email={} | msg={}", email, ex.getMessage());
-            return false;
+    private String normalizedCdnBase() {
+        if (cdnBaseUrl == null || cdnBaseUrl.isBlank()) {
+            throw new IllegalStateException("bunny.cdn.base-url não configurado");
         }
+        return cdnBaseUrl.endsWith("/") ? cdnBaseUrl.substring(0, cdnBaseUrl.length() - 1) : cdnBaseUrl;
     }
 
-    /** Resolve extensão com base no content-type > filename; default "jpg" (com logs) */
-    private String resolveExt(MultipartFile avatar) {
-        String ct = avatar.getContentType();
-        if (ct != null) {
-            switch (ct.toLowerCase()) {
+    private String firstWordOrDefault(String s, String def) {
+        if (s == null || s.isBlank()) return def;
+        String first = s.trim().split("\\s+")[0];
+        return first.isBlank() ? def : first;
+    }
+
+    private String sanitizeBaseName(String s) {
+        String noAccents = java.text.Normalizer.normalize(s, java.text.Normalizer.Form.NFD)
+                .replaceAll("\\p{M}", "");
+        String out = noAccents.replaceAll("[^A-Za-z0-9_-]+", "_")
+                .replaceAll("_+", "_")
+                .replaceAll("^_+|_+$", "")
+                .toLowerCase();
+        return out.isBlank() ? "user" : out;
+    }
+
+    private String resolveExt(String contentType, String originalFilename) {
+        if (contentType != null) {
+            switch (contentType.toLowerCase()) {
                 case "image/png":  return "png";
                 case "image/jpeg":
                 case "image/jpg":  return "jpg";
@@ -259,12 +228,38 @@ public class UserService {
                 case "image/heif": return "heif";
             }
         }
-        String originalFilename = avatar.getOriginalFilename();
         if (originalFilename != null && originalFilename.contains(".")) {
             String ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase();
             if (ext.matches("[a-z0-9]{1,6}")) return ext;
         }
-        log.debug("[UserService] resolveExt: contentType/filename não definiram extensão; usando 'jpg'");
         return "jpg";
+    }
+
+    private boolean isValidEmailFormat(String email) {
+        String e = email.trim();
+        return e.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
+    }
+
+    private boolean domainHasMX(String email) {
+        try {
+            String domain = email.substring(email.indexOf('@') + 1).trim();
+            if (domain.isEmpty()) return false;
+
+            Hashtable<String, String> env = new Hashtable<>();
+            env.put("java.naming.factory.initial", "com.sun.jndi.dns.DnsContextFactory");
+            env.put("com.sun.jndi.dns.timeout.initial", "2000");
+            env.put("com.sun.jndi.dns.timeout.retries", "1");
+
+            DirContext ictx = new InitialDirContext(env);
+            Attributes attrs = ictx.getAttributes(domain, new String[] { "MX" });
+            Attribute attr = attrs.get("MX");
+            if (attr != null && attr.size() > 0) return true;
+
+            attrs = ictx.getAttributes(domain, new String[] { "A", "AAAA" });
+            return (attrs.get("A") != null || attrs.get("AAAA") != null);
+
+        } catch (NamingException | StringIndexOutOfBoundsException ex) {
+            return false;
+        }
     }
 }

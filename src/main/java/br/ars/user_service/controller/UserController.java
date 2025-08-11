@@ -1,180 +1,96 @@
 package br.ars.user_service.controller;
 
-import java.util.Map;
-import java.util.UUID;
-import java.util.concurrent.CompletableFuture;
-
 import com.fasterxml.jackson.databind.ObjectMapper;
-
-import org.springframework.http.HttpStatus;
-import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
+import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import br.ars.user_service.dto.LoginRequest;
-import br.ars.user_service.dto.PerfilResponse;
 import br.ars.user_service.dto.RegisterRequest;
-import br.ars.user_service.models.User;
 import br.ars.user_service.registration.RegistrationCommand;
 import br.ars.user_service.registration.RegistrationQueueService;
 import br.ars.user_service.service.UserService;
-import br.ars.user_service.queue.DbRequestQueueService; // <- serviço de fila DB-bound
 
+import java.util.Map;
+
+@Slf4j
 @RestController
 @RequestMapping("/api/users")
-@CrossOrigin
+@RequiredArgsConstructor
 public class UserController {
 
+    private final ObjectMapper objectMapper;
     private final UserService service;
     private final RegistrationQueueService registrationQueueService;
-    private final DbRequestQueueService dbQueue; // <- fila para login/perfil/getById
-    private final ObjectMapper objectMapper = new ObjectMapper();
 
-    public UserController(UserService service,
-                          RegistrationQueueService registrationQueueService,
-                          DbRequestQueueService dbQueue) {
-        this.service = service;
-        this.registrationQueueService = registrationQueueService;
-        this.dbQueue = dbQueue;
-    }
-
-    /**
-     * Registro ASSÍNCRONO (único método de registro).
-     *
-     * Espera multipart:
-     *  - part "data": JSON do RegisterRequest (application/json ou text/plain)
-     *  - part "avatar": arquivo de imagem (opcional)
-     *
-     * Comportamento:
-     *  - Responde 202 Accepted assim que enfileira.
-     *  - Se a fila estiver cheia: 503 Service Unavailable.
-     *  - Se o e-mail já existir: 200 OK (idempotente).
-     */
-    @PostMapping(
-        value = "/register",
-        consumes = MediaType.MULTIPART_FORM_DATA_VALUE,
-        produces = MediaType.APPLICATION_JSON_VALUE
-    )
+    @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> register(
             @RequestPart("data") String data,
             @RequestPart(name = "avatar", required = false) MultipartFile avatar) {
 
         try {
+            log.info("[Controller] /register recebido | hasAvatar={} | ct={} | size={}",
+                    avatar != null && !avatar.isEmpty(),
+                    avatar != null ? avatar.getContentType() : null,
+                    avatar != null ? avatar.getSize() : -1);
+
             RegisterRequest request = objectMapper.readValue(data, RegisterRequest.class);
 
-            // Idempotência rápida: se já existe, não gasta fila
+            // Idempotência rápida
             if (service.findByEmail(request.getEmail()).isPresent()) {
-                return ResponseEntity.ok(Map.of(
-                    "status", "already_exists",
-                    "email", request.getEmail()
-                ));
+                log.info("[Controller] Email já cadastrado: {}", request.getEmail());
+                return ResponseEntity.ok(Map.of("status", "already_exists", "email", request.getEmail()));
             }
 
-            String requestId = UUID.randomUUID().toString();
-            RegistrationCommand cmd = new RegistrationCommand(request, avatar, requestId);
+            // Capture bytes AQUI (nunca enfileire MultipartFile)
+            byte[] avatarBytes = null;
+            String filename = null;
+            String contentType = null;
+            if (avatar != null && !avatar.isEmpty()) {
+                avatarBytes = avatar.getBytes();
+                filename = avatar.getOriginalFilename();
+                contentType = avatar.getContentType();
+                log.info("[Controller] Avatar capturado | filename={} | ct={} | bytes={}",
+                        filename, contentType, avatarBytes.length);
+            } else {
+                log.info("[Controller] Sem avatar no request ou arquivo vazio.");
+            }
 
-            // Tenta enfileirar (sem bloquear)
+            var cmd = new RegistrationCommand(request, avatarBytes, filename, contentType);
             boolean offered = registrationQueueService.offer(cmd);
             if (!offered) {
-                // Backpressure: protege a instância barata na nuvem
+                log.warn("[Controller] Fila cheia. Rejeitando por backpressure.");
                 return ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).body(Map.of(
-                    "status", "queue_full",
-                    "message", "Sistema em pico. Tente novamente em instantes."
+                        "status", "queue_full",
+                        "message", "Sistema em pico. Tente novamente em instantes."
                 ));
             }
 
-            // Tamanho atual da fila (aproxima posição do item recém-enfileirado)
             int size = registrationQueueService.queueSize();
-
+            log.info("[Controller] Registro enfileirado | queueSize={}", size);
             return ResponseEntity.status(HttpStatus.ACCEPTED).body(Map.of(
-                "status", "accepted",
-                "requestId", requestId,
-                "queueSize", size,
-                "note", "O processamento inicia imediatamente se houver worker livre; caso contrário, aguarda na fila."
+                    "status", "accepted",
+                    "queueSize", size
             ));
-
         } catch (com.fasterxml.jackson.core.JsonProcessingException jpe) {
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST)
-                    .body(Map.of("status", "bad_request",
-                                 "message", "JSON inválido no part 'data': " + jpe.getOriginalMessage()));
+            log.warn("[Controller] JSON inválido em 'data': {}", jpe.getOriginalMessage());
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "bad_request",
+                    "message", "JSON inválido no part 'data': " + jpe.getOriginalMessage()
+            ));
         } catch (IllegalArgumentException iae) {
-            // Ex.: senha vazia; evitar enfileirar lixo
-            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
-                "status", "bad_request",
-                "message", iae.getMessage()
+            log.warn("[Controller] Requisição inválida: {}", iae.getMessage());
+            return ResponseEntity.badRequest().body(Map.of(
+                    "status", "bad_request",
+                    "message", iae.getMessage()
             ));
         } catch (Exception ex) {
+            log.error("[Controller] Falha ao enfileirar registro: {}", ex.getMessage(), ex);
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
-                "status", "error",
-                "message", "Falha ao enfileirar registro: " + ex.getMessage()
+                    "status", "error",
+                    "message", "Falha ao enfileirar registro: " + ex.getMessage()
             ));
         }
-    }
-
-    /** Métricas da fila de registro */
-    @GetMapping("/register/queue-stats")
-    public ResponseEntity<Map<String, Object>> registerQueueStats() {
-        return ResponseEntity.ok(Map.of(
-            "queueSize", registrationQueueService.queueSize(),
-            "activeDbWorkers", registrationQueueService.activeDb()
-        ));
-    }
-
-    // ===================== DB-BOUND ENDPOINTS COM FILA =====================
-
-    /** Login assíncrono (DB-bound controlado por fila) */
-    @PostMapping("/login")
-    public CompletableFuture<ResponseEntity<String>> login(@RequestBody LoginRequest request) {
-        return dbQueue.submit(() -> {
-            String token = service.authenticateAndGenerateToken(request.getEmail(), request.getPassword());
-            return ResponseEntity.ok(token);
-        }).exceptionally(ex -> {
-            // Se a fila estiver cheia ou erro de auth, retorna 401/503 conforme mensagem
-            String msg = ex.getCause() != null ? ex.getCause().getMessage() : ex.getMessage();
-            // Heurística simples: auth falhou -> 401, caso contrário 503
-            HttpStatus status = (msg != null && msg.toLowerCase().contains("usuário") || (msg != null && msg.toLowerCase().contains("senha")))
-                    ? HttpStatus.UNAUTHORIZED : HttpStatus.SERVICE_UNAVAILABLE;
-            return ResponseEntity.status(status).body(msg);
-        });
-    }
-
-    /** Buscar perfil por e-mail (DB-bound) via fila */
-    @GetMapping("/perfil/{email}")
-    public CompletableFuture<ResponseEntity<PerfilResponse>> getPerfilByEmail(@PathVariable String email) {
-        return dbQueue.submit(() -> {
-            PerfilResponse perfil = service.getPerfilByEmail(email);
-            return ResponseEntity.ok(perfil);
-        }).exceptionally(ex -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(null));
-    }
-
-    /** Buscar usuário por ID (DB-bound) via fila */
-    @GetMapping("/{id}")
-    public CompletableFuture<ResponseEntity<User>> getById(@PathVariable UUID id) {
-        return dbQueue.submit(() -> service.findById(id)
-                .map(ResponseEntity::ok)
-                .orElse(ResponseEntity.notFound().build()))
-            .exceptionally(ex -> ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE).build());
-    }
-
-    /** Remoção (DB-bound) – pode ou não ir para a fila; aqui deixei direto, mas dá para adaptar igual */
-    @DeleteMapping("/{id}")
-    public CompletableFuture<ResponseEntity<String>> delete(@PathVariable UUID id) {
-        return dbQueue.submit(() -> {
-            if (service.findById(id).isEmpty()) {
-                return ResponseEntity.status(HttpStatus.NOT_FOUND).body("Usuário não encontrado.");
-            }
-            service.deleteUser(id);
-            return ResponseEntity.ok("Usuário removido com sucesso.");
-        }).exceptionally(ex -> ResponseEntity.status(HttpStatus.SERVICE_UNAVAILABLE)
-                .body("Falha ao remover usuário: " + ex.getMessage()));
-    }
-
-    /** Métricas da fila DB-bound (login/perfil/getById/delete) */
-    @GetMapping("/db-queue-stats")
-    public ResponseEntity<Map<String, Object>> dbQueueStats() {
-        return ResponseEntity.ok(Map.of(
-            "dbQueueSize", dbQueue.getQueueSize()
-        ));
     }
 }
