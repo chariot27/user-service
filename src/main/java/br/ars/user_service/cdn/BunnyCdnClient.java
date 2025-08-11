@@ -1,5 +1,7 @@
 package br.ars.user_service.cdn;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
 import org.springframework.stereotype.Component;
@@ -13,6 +15,8 @@ import java.nio.charset.StandardCharsets;
 
 @Component
 public class BunnyCdnClient {
+
+    private static final Logger log = LoggerFactory.getLogger(BunnyCdnClient.class);
 
     @Value("${bunny.storage.base-url}")             // ex.: https://storage.bunnycdn.com
     private String baseUrl;
@@ -36,17 +40,30 @@ public class BunnyCdnClient {
      * NÃO retorna URL; apenas executa o PUT no Storage.
      */
     public void uploadAvatar(MultipartFile file, String key) {
-        if (file == null || file.isEmpty()) {
+        if (file == null) {
+            log.warn("[Bunny] uploadAvatar: MultipartFile é null para key={}", key);
+            throw new IllegalArgumentException("Arquivo de avatar nulo.");
+        }
+        if (file.isEmpty()) {
+            log.warn("[Bunny] uploadAvatar: MultipartFile vazio para key={}, originalFilename={}", key, file.getOriginalFilename());
             throw new IllegalArgumentException("Arquivo de avatar vazio.");
         }
+
         try {
-            byte[] bytes = StreamUtils.copyToByteArray(file.getInputStream());
+            long reportedSize = file.getSize();
+            String originalName = file.getOriginalFilename();
             String contentType = (file.getContentType() != null && !file.getContentType().isBlank())
                     ? file.getContentType()
                     : "application/octet-stream";
 
             String path = trimLeftRight(key, "/"); // evita // duplicado
             String storageUrl = String.format("%s/%s/%s", trimRight(baseUrl), zoneName, path);
+
+            log.info("[Bunny] Preparando upload | key={} | storageUrl={} | originalFilename={} | reportedSize={} | contentType={}",
+                    path, storageUrl, originalName, reportedSize, contentType);
+
+            byte[] bytes = StreamUtils.copyToByteArray(file.getInputStream());
+            log.debug("[Bunny] Bytes lidos do MultipartFile | length={}", bytes.length);
 
             HttpHeaders headers = new HttpHeaders();
             headers.set("AccessKey", accessKey);
@@ -55,10 +72,19 @@ public class BunnyCdnClient {
 
             HttpEntity<byte[]> entity = new HttpEntity<>(bytes, headers);
             ResponseEntity<String> resp = restTemplate.exchange(storageUrl, HttpMethod.PUT, entity, String.class);
+
+            log.info("[Bunny] Resposta do Storage | status={} | bodyPreview={}",
+                    resp.getStatusCode(), safePreview(resp.getBody()));
+
             if (!resp.getStatusCode().is2xxSuccessful()) {
+                log.error("[Bunny] Falha no upload | status={} | url={}", resp.getStatusCode(), storageUrl);
                 throw new RuntimeException("Falha upload Bunny: " + resp.getStatusCode());
             }
+
+            log.info("[Bunny] Upload concluído com sucesso | key={} | bytes={}", path, bytes.length);
+
         } catch (IOException e) {
+            log.error("[Bunny] Erro lendo/enviando arquivo | key={} | msg={}", key, e.getMessage(), e);
             throw new RuntimeException("Erro lendo/enviando arquivo: " + e.getMessage(), e);
         }
     }
@@ -69,7 +95,10 @@ public class BunnyCdnClient {
      * e retorna a URL pública final.
      */
     public String uploadAvatar(MultipartFile file, String userUuid, String desiredBaseName) {
-        if (file == null || file.isEmpty()) return null;
+        if (file == null || file.isEmpty()) {
+            log.warn("[Bunny] uploadAvatar(compat): arquivo vazio/nulo | userUuid={} | desiredBaseName={}", userUuid, desiredBaseName);
+            return null;
+        }
 
         // base "max" a partir do nome desejado
         String baseFromName = buildBaseFromFullName(desiredBaseName);
@@ -85,6 +114,9 @@ public class BunnyCdnClient {
         String folder = trimLeftRight(folderPrefix, "/");
         String key = (folder.isBlank() ? "" : folder + "/") + fileName;
 
+        log.info("[Bunny] Compat: montando key automática | desiredBaseName={} | safeBase={} | uuid={} | ext={} | key={}",
+                desiredBaseName, safeBase, userUuid, ext, key);
+
         // faz upload usando a key já montada
         uploadAvatar(file, key);
 
@@ -92,7 +124,10 @@ public class BunnyCdnClient {
         String safe = URLEncoder.encode(key, StandardCharsets.UTF_8)
                 .replace("+", "%20")
                 .replace("%2F", "/");
-        return trimRight(publicCdnBase) + "/" + safe;
+        String publicUrl = trimRight(publicCdnBase) + "/" + safe;
+
+        log.info("[Bunny] Compat: URL pública gerada | publicUrl={}", publicUrl);
+        return publicUrl;
     }
 
     // ===== Helpers =====
@@ -145,6 +180,13 @@ public class BunnyCdnClient {
             String ext = original.substring(original.lastIndexOf('.') + 1).toLowerCase();
             if (ext.matches("[a-z0-9]{1,6}")) return ext;
         }
+        log.debug("[Bunny] guessExt: contentType/original vazios ou desconhecidos, usando 'jpg'");
         return "jpg";
+    }
+
+    private String safePreview(String body) {
+        if (body == null) return "<null>";
+        String trimmed = body.replaceAll("\\s+", " ").trim();
+        return trimmed.length() > 200 ? trimmed.substring(0, 200) + "..." : trimmed;
     }
 }
