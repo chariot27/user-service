@@ -14,53 +14,41 @@ import java.nio.charset.StandardCharsets;
 @Component
 public class BunnyCdnClient {
 
-    @Value("${bunny.storage.base-url}")
-    private String baseUrl;              // ex.: https://storage.bunnycdn.com
-    @Value("${bunny.storage.zone-name}")
-    private String zoneName;             // ex.: sua_storage_zone
-    @Value("${bunny.storage.access-key}")
-    private String accessKey;            // header AccessKey
-    @Value("${bunny.storage.folder-prefix:users}")
-    private String folderPrefix;         // ex.: users
-    @Value("${bunny.cdn.base-url}")
-    private String publicCdnBase;        // ex.: https://ars-vnh.b-cdn.net
+    @Value("${bunny.storage.base-url}")       // ex.: https://storage.bunnycdn.com
+    private String baseUrl;
+
+    @Value("${bunny.storage.zone-name}")      // ex.: sua_storage_zone
+    private String zoneName;
+
+    @Value("${bunny.storage.access-key}")     // header AccessKey
+    private String accessKey;
+
+    @Value("${bunny.storage.folder-prefix:users}") // ex.: users
+    private String folderPrefix;
+
+    @Value("${bunny.cdn.base-url}")           // ex.: https://ars-vnh.b-cdn.net
+    private String publicCdnBase;
 
     private final RestTemplate restTemplate = new RestTemplate();
 
     /**
-     * Sobe o arquivo do jeito que veio e retorna a URL pública:
-     * https://<pullzone>/users/<primeiroNome><uuid>.<ext>
-     * (se não achar extensão, sobe sem extensão)
+     * NOVO: sobe o arquivo usando a key já montada (ex.: "users/max<uuid>.jpg").
+     * Não retorna URL; apenas executa o PUT no Storage.
      */
-    public String uploadAvatar(MultipartFile file, String userUuid, String desiredBaseName) {
-        if (file == null || file.isEmpty()) return null;
-
-        // base pelo primeiro nome: "Max da Silva" -> "max"
-        String baseFromName = buildBaseFromFullName(desiredBaseName);
-        String safeBase = sanitizeBaseName(baseFromName);
-        if (safeBase == null || safeBase.isBlank()) safeBase = "user";
-
-        // tenta pegar extensão real
-        String ext = guessExt(file.getOriginalFilename(), file.getContentType());
-
-        // monta nome final
-        String fileName = ext != null && !ext.isBlank()
-                ? (safeBase + userUuid + "." + ext)
-                : (safeBase + userUuid);
-
-        String path = trimLeftRight(folderPrefix, "/") + "/"; // "users/"
-        String storageUrl = String.format("%s/%s/%s%s",
-                trimRight(baseUrl), zoneName, path, fileName);
-
+    public void uploadAvatar(MultipartFile file, String key) {
+        if (file == null || file.isEmpty()) {
+            throw new IllegalArgumentException("Arquivo de avatar vazio.");
+        }
         try {
             byte[] bytes = StreamUtils.copyToByteArray(file.getInputStream());
-
-            // content-type: usa o vindo do arquivo; senão, tenta por extensão; senão octet-stream
             String contentType = file.getContentType();
             if (contentType == null || contentType.isBlank()) {
-                contentType = mimeFromExt(ext);
+                contentType = "application/octet-stream";
             }
-            if (contentType == null) contentType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+
+            String path = trimLeftRight(key, "/"); // garante que não entre com // duplicado
+            String storageUrl = String.format("%s/%s/%s",
+                    trimRight(baseUrl), zoneName, path);
 
             HttpHeaders headers = new HttpHeaders();
             headers.set("AccessKey", accessKey);
@@ -72,16 +60,38 @@ public class BunnyCdnClient {
             if (!resp.getStatusCode().is2xxSuccessful()) {
                 throw new RuntimeException("Falha upload Bunny: " + resp.getStatusCode());
             }
-
-            // URL pública final
-            String safe = URLEncoder.encode(path + fileName, StandardCharsets.UTF_8)
-                    .replace("+", "%20")
-                    .replace("%2F", "/");
-            return trimRight(publicCdnBase) + "/" + safe;
-
         } catch (IOException e) {
             throw new RuntimeException("Erro lendo/enviando arquivo: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Assinatura original: constrói automaticamente "users/<primeiroNome><uuid>.<ext>"
+     * e retorna a URL pública. Mantida por compatibilidade.
+     */
+    public String uploadAvatar(MultipartFile file, String userUuid, String desiredBaseName) {
+        if (file == null || file.isEmpty()) return null;
+
+        String baseFromName = buildBaseFromFullName(desiredBaseName);
+        String safeBase = sanitizeBaseName(baseFromName);
+        if (safeBase == null || safeBase.isBlank()) safeBase = "user";
+
+        String ext = guessExt(file.getOriginalFilename(), file.getContentType());
+        String fileName = (ext != null && !ext.isBlank())
+                ? (safeBase + userUuid + "." + ext)
+                : (safeBase + userUuid);
+
+        String folder = trimLeftRight(folderPrefix, "/");
+        String key = (folder.isBlank() ? "" : folder + "/") + fileName;
+
+        // Faz o upload usando a nova assinatura
+        uploadAvatar(file, key);
+
+        // Monta e retorna a URL pública
+        String safe = URLEncoder.encode(key, StandardCharsets.UTF_8)
+                .replace("+", "%20")
+                .replace("%2F", "/");
+        return trimRight(publicCdnBase) + "/" + safe;
     }
 
     // ===== Helpers =====
@@ -116,7 +126,6 @@ public class BunnyCdnClient {
         return out.isBlank() ? null : out;
     }
 
-    /** Extrai extensão a partir do nome e/ou content-type */
     private String guessExt(String original, String contentType) {
         if (original != null && original.contains(".")) {
             String ext = original.substring(original.lastIndexOf('.') + 1).toLowerCase();
@@ -124,34 +133,17 @@ public class BunnyCdnClient {
         }
         if (contentType != null) {
             switch (contentType.toLowerCase()) {
-                case "image/png": return "png";
-                case "image/jpeg": return "jpg";
-                case "image/jpg": return "jpg";
+                case "image/png":  return "png";
+                case "image/jpeg":
+                case "image/jpg":  return "jpg";
                 case "image/webp": return "webp";
-                case "image/gif": return "gif";
-                case "image/bmp": return "bmp";
+                case "image/gif":  return "gif";
+                case "image/bmp":  return "bmp";
                 case "image/svg+xml": return "svg";
                 case "image/heic": return "heic";
                 case "image/heif": return "heif";
             }
         }
-        return null; // sem extensão
-    }
-
-    /** Deriva mime-type pela extensão quando content-type não vier preenchido */
-    private String mimeFromExt(String ext) {
-        if (ext == null) return null;
-        switch (ext.toLowerCase()) {
-            case "png":  return "image/png";
-            case "jpg":
-            case "jpeg": return "image/jpeg";
-            case "webp": return "image/webp";
-            case "gif":  return "image/gif";
-            case "bmp":  return "image/bmp";
-            case "svg":  return "image/svg+xml";
-            case "heic": return "image/heic";
-            case "heif": return "image/heif";
-            default:     return null;
-        }
+        return null;
     }
 }

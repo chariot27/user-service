@@ -47,7 +47,6 @@ public class UserService {
     }
 
     /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
-    /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
         // 0) valida formato e domínio MX antes de qualquer coisa
@@ -86,14 +85,26 @@ public class UserService {
                 if (baseName == null) baseName = "user";
                 baseName = baseName.trim();
                 if (baseName.isEmpty()) baseName = "user";
-                // pega primeiro token e remove caracteres não permitidos
                 baseName = baseName.split("\\s+")[0].replaceAll("[^A-Za-z0-9_-]", "").toLowerCase();
                 if (baseName.isEmpty()) baseName = "user";
 
-                String finalUrl = bunny.uploadAvatar(avatar, user.getId().toString(), baseName);
-                if (finalUrl == null || finalUrl.isBlank()) {
-                    throw new RuntimeException("Upload no CDN concluído, mas URL pública vazia.");
+                // extrai extensão do arquivo
+                String originalFilename = avatar.getOriginalFilename();
+                String ext = "png";
+                if (originalFilename != null && originalFilename.contains(".")) {
+                    ext = originalFilename.substring(originalFilename.lastIndexOf('.') + 1).toLowerCase();
                 }
+
+                // monta nome final: users/max<uuid>.<ext>
+                String fileName = baseName + user.getId().toString() + "." + ext;
+                String key = "users/" + fileName;
+
+                // envia pro CDN usando a key (assinatura de 2 parâmetros)
+                bunny.uploadAvatar(avatar, key);
+
+                // monta URL pública
+                String finalUrl = "https://ars-vnh.b-cdn.net/" + key;
+
                 user.setAvatarUrl(finalUrl);
                 user = repo.save(user);
             }
@@ -104,7 +115,6 @@ public class UserService {
             throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
         }
     }
-
 
     @Transactional
     public PerfilResponse getPerfilByEmail(String email) {
@@ -149,7 +159,6 @@ public class UserService {
     /** Validação simples de formato de e-mail */
     private boolean isValidEmailFormat(String email) {
         String e = email.trim();
-        // formato básico, sem ser overkill
         return e.matches("^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}$");
     }
 
@@ -161,7 +170,6 @@ public class UserService {
 
             Hashtable<String, String> env = new Hashtable<>();
             env.put("java.naming.factory.initial", "com.sun.jndi.dns.DnsContextFactory");
-            // timeouts para não travar request se o DNS estiver lento
             env.put("com.sun.jndi.dns.timeout.initial", "2000"); // ms
             env.put("com.sun.jndi.dns.timeout.retries", "1");
 
@@ -170,7 +178,7 @@ public class UserService {
             Attribute attr = attrs.get("MX");
             if (attr != null && attr.size() > 0) return true;
 
-            // fallback: alguns domínios não expõem MX e usam A/AAAA para SMTP (raro, mas possível)
+            // fallback A/AAAA
             attrs = ictx.getAttributes(domain, new String[] { "A", "AAAA" });
             return (attrs.get("A") != null || attrs.get("AAAA") != null);
 
