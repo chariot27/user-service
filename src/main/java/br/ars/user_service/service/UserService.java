@@ -74,6 +74,7 @@ public class UserService {
         }
     }
 
+    @Transactional
     public PerfilResponse getPerfilByEmail(String email) {
         User user = repo.findByEmail(email)
             .orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
@@ -89,6 +90,7 @@ public class UserService {
         return perfil;
     }
 
+    @Transactional
     public String authenticateAndGenerateToken(String email, String rawPassword) {
         User user = repo.findByEmail(email)
             .orElseThrow(() -> new RuntimeException("Usuário não encontrado."));
@@ -98,9 +100,13 @@ public class UserService {
         return jwtUtil.generateToken(user.getId(), user.getEmail());
     }
 
+    @Transactional
     public Optional<User> findById(UUID id) { return repo.findById(id); }
+
+    @Transactional
     public Optional<User> findByEmail(String email) { return repo.findByEmail(email); }
 
+    @Transactional
     public void deleteUser(UUID id) {
         if (!repo.existsById(id)) throw new RuntimeException("Usuário não encontrado para deletar.");
         repo.deleteById(id);
