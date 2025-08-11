@@ -47,16 +47,20 @@ public class UserService {
     }
 
     /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
+    /** Registro com UUID do banco + upload do avatar com padrão: users/<primeiroNome><uuid>.<ext> */
     @Transactional
     public User register(RegisterRequest req, MultipartFile avatar) {
         // 0) valida formato e domínio MX antes de qualquer coisa
-        final String email = req.getEmail();
-        if (email == null || !isValidEmailFormat(email)) {
+        final String rawEmail = req.getEmail();
+        if (rawEmail == null || !isValidEmailFormat(rawEmail)) {
             throw new IllegalArgumentException("E-mail inválido.");
         }
-        if (!domainHasMX(email)) {
+        if (!domainHasMX(rawEmail)) {
             throw new IllegalArgumentException("Domínio de e-mail sem MX válido. Verifique o endereço informado.");
         }
+
+        // normaliza e-mail ANTES da unicidade
+        final String email = rawEmail.trim().toLowerCase();
 
         // 1) unicidade
         repo.findByEmail(email).ifPresent(u -> {
@@ -69,7 +73,7 @@ public class UserService {
             if (user.getSenha() == null || user.getSenha().isBlank()) {
                 throw new IllegalArgumentException("Senha obrigatória.");
             }
-            user.setEmail(email.trim().toLowerCase()); // normaliza
+            user.setEmail(email); // já normalizado
             user.setSenha(encoder.encode(user.getSenha()));
 
             // 3) persiste para gerar UUID
@@ -77,8 +81,19 @@ public class UserService {
 
             // 4) upload opcional -> grava URL pública final no avatarUrl
             if (avatar != null && !avatar.isEmpty()) {
+                // baseName = primeiro nome saneado
                 String baseName = req.getNome();
+                if (baseName == null) baseName = "user";
+                baseName = baseName.trim();
+                if (baseName.isEmpty()) baseName = "user";
+                // pega primeiro token e remove caracteres não permitidos
+                baseName = baseName.split("\\s+")[0].replaceAll("[^A-Za-z0-9_-]", "").toLowerCase();
+                if (baseName.isEmpty()) baseName = "user";
+
                 String finalUrl = bunny.uploadAvatar(avatar, user.getId().toString(), baseName);
+                if (finalUrl == null || finalUrl.isBlank()) {
+                    throw new RuntimeException("Upload no CDN concluído, mas URL pública vazia.");
+                }
                 user.setAvatarUrl(finalUrl);
                 user = repo.save(user);
             }
@@ -89,6 +104,7 @@ public class UserService {
             throw new RuntimeException("Erro ao registrar usuário: " + e.getMessage(), e);
         }
     }
+
 
     @Transactional
     public PerfilResponse getPerfilByEmail(String email) {
