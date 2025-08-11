@@ -7,12 +7,17 @@ import org.springframework.http.*;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
+import br.ars.user_service.dto.PerfilResponse;
 import br.ars.user_service.dto.RegisterRequest;
+import br.ars.user_service.models.User;
 import br.ars.user_service.registration.RegistrationCommand;
 import br.ars.user_service.registration.RegistrationQueueService;
 import br.ars.user_service.service.UserService;
 
+import java.time.OffsetDateTime;
 import java.util.Map;
+import java.util.Optional;
+import java.util.UUID;
 
 @Slf4j
 @RestController
@@ -24,6 +29,7 @@ public class UserController {
     private final UserService service;
     private final RegistrationQueueService registrationQueueService;
 
+    // ===================== REGISTER (multipart) =====================
     @PostMapping(value = "/register", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<?> register(
             @RequestPart("data") String data,
@@ -91,6 +97,124 @@ public class UserController {
                     "status", "error",
                     "message", "Falha ao enfileirar registro: " + ex.getMessage()
             ));
+        }
+    }
+
+    // ===================== LOGIN =====================
+    @PostMapping(value = "/login", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> login(@RequestBody LoginRequest body) {
+        try {
+            log.info("[Controller] /login | email={}", body != null ? body.email : null);
+            if (body == null || body.email == null || body.password == null) {
+                return ResponseEntity.badRequest().body(Map.of(
+                        "status", "bad_request",
+                        "message", "Informe email e password."
+                ));
+            }
+            String token = service.authenticateAndGenerateToken(body.email, body.password);
+            log.info("[Controller] /login OK | email={}", body.email);
+            return ResponseEntity.ok(Map.of("token", token));
+        } catch (IllegalArgumentException iae) {
+            log.warn("[Controller] /login inválido: {}", iae.getMessage());
+            return ResponseEntity.status(HttpStatus.BAD_REQUEST).body(Map.of(
+                    "status", "bad_request",
+                    "message", iae.getMessage()
+            ));
+        } catch (Exception ex) {
+            log.error("[Controller] /login erro: {}", ex.getMessage(), ex);
+            return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(Map.of(
+                    "status", "unauthorized",
+                    "message", ex.getMessage()
+            ));
+        }
+    }
+
+    // ===================== GET BY ID =====================
+    @GetMapping(value = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> getById(@PathVariable("id") UUID id) {
+        log.info("[Controller] GET /{id} | id={}", id);
+        Optional<User> opt = service.findById(id);
+        if (opt.isEmpty()) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "status", "not_found",
+                    "message", "Usuário não encontrado."
+            ));
+        }
+        return ResponseEntity.ok(UserResponse.from(opt.get()));
+    }
+
+    // ===================== PERFIL POR EMAIL =====================
+    @GetMapping(value = "/perfil", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> getPerfilByEmail(@RequestParam("email") String email) {
+        try {
+            log.info("[Controller] GET /perfil | email={}", email);
+            PerfilResponse perfil = service.getPerfilByEmail(email);
+            return ResponseEntity.ok(perfil);
+        } catch (Exception ex) {
+            log.warn("[Controller] /perfil erro: {}", ex.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "status", "not_found",
+                    "message", ex.getMessage()
+            ));
+        }
+    }
+
+    // ===================== EXISTS (por email) =====================
+    @GetMapping(value = "/exists", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> existsByEmail(@RequestParam("email") String email) {
+        boolean exists = service.findByEmail(email).isPresent();
+        log.info("[Controller] /exists | email={} | exists={}", email, exists);
+        return ResponseEntity.ok(Map.of("exists", exists));
+    }
+
+    // ===================== DELETE =====================
+    @DeleteMapping("/{id}")
+    public ResponseEntity<?> delete(@PathVariable("id") UUID id) {
+        try {
+            log.info("[Controller] DELETE /{id} | id={}", id);
+            service.deleteUser(id);
+            return ResponseEntity.noContent().build();
+        } catch (Exception ex) {
+            log.warn("[Controller] DELETE erro: {}", ex.getMessage());
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                    "status", "not_found",
+                    "message", ex.getMessage()
+            ));
+        }
+    }
+
+    // ===================== DTOs auxiliares =====================
+    public static class LoginRequest {
+        public String email;
+        public String password;
+    }
+
+    public static class UserResponse {
+        public UUID id;
+        public String nome;
+        public String email;
+        public String telefone;
+        public String tipo;          // enum em string
+        public String bio;
+        public java.util.List<String> tags;
+        public String avatarUrl;
+        public OffsetDateTime dataCriacao;
+
+        public static UserResponse from(User u) {
+            UserResponse r = new UserResponse();
+            r.id = u.getId();
+            r.nome = u.getNome();
+            r.email = u.getEmail();
+            r.telefone = u.getTelefone();
+            r.tipo = (u.getTipo() != null ? u.getTipo().name() : null);
+            r.bio = u.getBio();
+            r.tags = u.getTags();
+            r.avatarUrl = u.getAvatarUrl();
+            try {
+                // se sua entidade tiver getDataCriacao()
+                r.dataCriacao = (OffsetDateTime) User.class.getMethod("getDataCriacao").invoke(u);
+            } catch (Exception ignore) { /* campo opcional */ }
+            return r;
         }
     }
 }
