@@ -1,5 +1,6 @@
 package br.ars.user_service.cdn;
 
+import jakarta.annotation.PostConstruct;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.*;
@@ -16,22 +17,43 @@ import java.nio.charset.StandardCharsets;
 @Component
 public class BunnyCdnClient {
 
-    @Value("${bunny.storage.base-url}")             // ex.: https://storage.bunnycdn.com
+    @Value("${bunny.storage.base-url}")                  // ex.: https://storage.bunnycdn.com ou https://br.storage.bunnycdn.com
     private String baseUrl;
 
-    @Value("${bunny.storage.zone-name}")            // ex.: sua_storage_zone
+    @Value("${bunny.storage.zone-name}")                 // NOME exato da Storage Zone (não é pull zone)
     private String zoneName;
 
-    @Value("${bunny.storage.access-key}")           // header AccessKey
-    private String accessKey;
+    // Aceita os DOIS nomes de propriedade. Se 'access-key' não vier, usa 'api-key' como fallback.
+    @Value("${bunny.storage.access-key:${bunny.storage.api-key:}}")
+    private String accessKeyRaw;
 
-    @Value("${bunny.storage.folder-prefix:users}")  // ex.: users
+    @Value("${bunny.storage.folder-prefix:users}")       // ex.: users
     private String folderPrefix;
 
-    @Value("${bunny.cdn.base-url}")                 // ex.: https://ars-vnh.b-cdn.net
+    @Value("${bunny.cdn.base-url}")                      // ex.: https://ars-vnh.b-cdn.net
     private String publicCdnBase;
 
+    private String accessKey; // já normalizada (trim)
+
     private final RestTemplate restTemplate = new RestTemplate();
+
+    @PostConstruct
+    void checkConfig() {
+        accessKey = accessKeyRaw == null ? null : accessKeyRaw.trim();
+        String akMasked = mask(accessKey);
+
+        log.info("[Bunny] Boot | baseUrl={} | zoneName={} | folderPrefix={} | cdnBase={} | accessKey(masked)={}",
+                baseUrl, zoneName, folderPrefix, publicCdnBase, akMasked);
+
+        if (baseUrl == null || baseUrl.isBlank())
+            throw new IllegalStateException("bunny.storage.base-url não configurado");
+        if (zoneName == null || zoneName.isBlank())
+            throw new IllegalStateException("bunny.storage.zone-name não configurado");
+        if (accessKey == null || accessKey.isBlank())
+            throw new IllegalStateException("AccessKey da Storage Zone ausente. Configure bunny.storage.access-key (ou bunny.storage.api-key).");
+        if (publicCdnBase == null || publicCdnBase.isBlank())
+            log.warn("[Bunny] bunny.cdn.base-url não configurado (URL pública não será montada em métodos compat).");
+    }
 
     /** Upload com MultipartFile e key já montada (ex.: "users/max<uuid>.jpg"). */
     public void uploadAvatar(MultipartFile file, String key) {
@@ -57,21 +79,35 @@ public class BunnyCdnClient {
             log.warn("[Bunny] uploadBytes: bytes vazios | key={}", key);
             throw new IllegalArgumentException("bytes vazios");
         }
+
         String path = trimLeftRight(key, "/");
         String storageUrl = String.format("%s/%s/%s", trimRight(baseUrl), zoneName, path);
         String ct = (contentType != null && !contentType.isBlank()) ? contentType : "application/octet-stream";
 
-        log.info("[Bunny] PUT bytes | key={} | url={} | ct={} | len={}", path, storageUrl, ct, bytes.length);
+        log.info("[Bunny] PUT bytes | url={} | zone={} | ct={} | len={} | accessKey(masked)={}",
+                storageUrl, zoneName, ct, bytes.length, mask(accessKey));
 
         HttpHeaders headers = new HttpHeaders();
-        headers.set("AccessKey", accessKey);
+        headers.set("AccessKey", accessKey); // precisa ser a STORAGE PASSWORD da Zone (trim aplicado)
         headers.setContentType(MediaType.parseMediaType(ct));
         headers.setContentLength(bytes.length);
 
         HttpEntity<byte[]> entity = new HttpEntity<>(bytes, headers);
-        ResponseEntity<String> resp = restTemplate.exchange(storageUrl, HttpMethod.PUT, entity, String.class);
+        ResponseEntity<String> resp;
+        try {
+            resp = restTemplate.exchange(storageUrl, HttpMethod.PUT, entity, String.class);
+        } catch (org.springframework.web.client.HttpClientErrorException.Unauthorized e) {
+            log.error("[Bunny] 401 Unauthorized no upload. Verifique:\n" +
+                      "  (1) baseUrl: {} (use o endpoint HTTP API correto — teste com curl)\n" +
+                      "  (2) zoneName: {}\n" +
+                      "  (3) AccessKey: deve ser a Storage Password da Zone (sem espaços/newline)\n" +
+                      "  (4) Firewalls/egress do provedor\nMsg={}",
+                      baseUrl, zoneName, e.getMessage());
+            throw e;
+        }
 
-        log.info("[Bunny] Resposta | status={} | bodyPreview={}", resp.getStatusCode(), safePreview(resp.getBody()));
+        log.info("[Bunny] Resposta | status={} | bodyPreview={}",
+                resp.getStatusCode(), safePreview(resp.getBody()));
         if (!resp.getStatusCode().is2xxSuccessful()) {
             throw new RuntimeException("Falha upload Bunny: " + resp.getStatusCode());
         }
@@ -83,11 +119,11 @@ public class BunnyCdnClient {
             log.warn("[Bunny] compat uploadAvatar: arquivo nulo/vazio");
             return null;
         }
-        String safeBase = sanitizeBaseName(buildBaseFromFullName(desiredBaseName));
-        if (safeBase == null || safeBase.isBlank()) safeBase = "user";
+        String base = sanitizeBaseName(buildBaseFromFullName(desiredBaseName));
+        if (base == null || base.isBlank()) base = "user";
 
         String ext = guessExt(file.getOriginalFilename(), file.getContentType());
-        String fileName = safeBase + userUuid + "." + ext;
+        String fileName = base + userUuid + "." + ext;
 
         String folder = trimLeftRight(folderPrefix, "/");
         String key = (folder.isBlank() ? "" : folder + "/") + fileName;
@@ -158,4 +194,11 @@ public class BunnyCdnClient {
         String trimmed = body.replaceAll("\\s+", " ").trim();
         return trimmed.length() > 200 ? trimmed.substring(0, 200) + "..." : trimmed;
     }
+
+    private String mask(String s) {
+        if (s == null) return "<null>";
+        String t = s.trim();
+        if (t.length() <= 6) return "******";
+        return t.substring(0, 3) + "****" + t.substring(t.length() - 3);
+        }
 }
