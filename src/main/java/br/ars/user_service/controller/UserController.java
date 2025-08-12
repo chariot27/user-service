@@ -16,7 +16,6 @@ import br.ars.user_service.service.UserService;
 
 import java.time.OffsetDateTime;
 import java.util.Map;
-import java.util.Optional;
 import java.util.UUID;
 
 @Slf4j
@@ -129,20 +128,6 @@ public class UserController {
         }
     }
 
-    // ===================== GET BY ID =====================
-    @GetMapping(value = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
-    public ResponseEntity<?> getById(@PathVariable("id") UUID id) {
-        log.info("[Controller] GET /{id} | id={}", id);
-        Optional<User> opt = service.findById(id);
-        if (opt.isEmpty()) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
-                    "status", "not_found",
-                    "message", "Usuário não encontrado."
-            ));
-        }
-        return ResponseEntity.ok(UserResponse.from(opt.get()));
-    }
-
     // ===================== PERFIL POR EMAIL =====================
     @GetMapping(value = "/perfil", produces = MediaType.APPLICATION_JSON_VALUE)
     public ResponseEntity<?> getPerfilByEmail(@RequestParam("email") String email) {
@@ -157,6 +142,19 @@ public class UserController {
                     "message", ex.getMessage()
             ));
         }
+    }
+
+    // ===================== GET BY ID (re-adicionado) =====================
+    @GetMapping(value = "/{id}", produces = MediaType.APPLICATION_JSON_VALUE)
+    public ResponseEntity<?> getById(@PathVariable("id") UUID id) {
+        log.info("[Controller] GET /{} | id={}", "id", id);
+        return service.findById(id)
+                .map(UserResponse::from)
+                .<ResponseEntity<?>>map(ResponseEntity::ok)
+                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of(
+                        "status", "not_found",
+                        "message", "Usuário não encontrado"
+                )));
     }
 
     // ===================== EXISTS (por email) =====================
